@@ -1,46 +1,47 @@
-# Environment files
-.env
-*.env
-
-# Python cache
+.venv/
+venv/
 __pycache__/
-**/__pycache__/
-.pytest_cache/
-**/.pytest_cache/
-diskcache/
-
-# Python artifacts
 *.pyc
 *.pyo
 *.pyd
+*.pyw
+*.pyz
+*.vscode
 *.log
-
-# Database
-*.db
-
-# Virtual environments
-venv/
-.venv/
-
-# Build
-build/
-dist/
-*.egg-info/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
+*.env
+**/uploaded_files/
+**/documents.db
+**/artifacts/customer-logos/
+/screenshots
+domain_knowledge/
+.gitlab/
+ 
 # Runtime-generated folders
 media/
 tmp/
 uploads/
 temp_files/
 exports/
+diskcache/
 
 # Tests (ONLY if intentionally excluded)
 Testcases/
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.vscode
+*.log
+*.env
+**/uploaded_files/
+**/documents.db
+**/artifacts/customer-logos/
+/screenshots
+domain_knowledge/
+.gitlab/
+ 
