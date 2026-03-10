@@ -175,9 +175,8 @@ def normalize_header(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s.lower()
 
-
 async def process_excel_upload(file, db: Session, user, base_url: str):
-    """Process uploaded Excel for shift allowances."""
+    """Process uploaded Excel for shift allowances (optimized)."""
     if not file.filename.endswith((".xls", ".xlsx")):
         raise HTTPException(400, "Only Excel files allowed")
 
@@ -200,7 +199,7 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
         clean_df, error_df = validate_excel_data(df)
         error_rows, fname = [], None
 
-    
+        # Handle Excel error file generation (unchanged)
         if error_df is not None and not error_df.empty:
             error_rows = normalize_error_rows(error_df.to_dict("records"))
             fname = f"validation_errors_{uuid.uuid4().hex}.xlsx"
@@ -211,7 +210,6 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
                 workbook = writer.book
                 sheet = writer.sheets["Errors"]
 
-              
                 fmt_header = workbook.add_format({
                     "align": "center", "valign": "vcenter",
                     "bold": True, "border": 1, "text_wrap": True
@@ -221,10 +219,8 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
                 })
                 fmt_days = workbook.add_format({
                     "align": "center", "valign": "vcenter", "border": 1,
-                    "num_format": "0.0"   
+                    "num_format": "0.0"
                 })
-
-               
                 fmt_inr = workbook.add_format({
                     "align": "center", "valign": "vcenter", "border": 1,
                     "num_format": "₹ #,##0"
@@ -232,10 +228,7 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
 
                 shift_keys = get_all_shift_keys()
                 DAY_COLS = set(shift_keys + ["total_days"])
-
-
                 configured_allowance_cols = get_allowance_columns()
-
                 normalized_allowance_cols = {normalize_header(c) for c in configured_allowance_cols}
 
                 CURRENCY_COLS = {
@@ -245,7 +238,6 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
                 CURRENCY_COLS = CURRENCY_COLS - DAY_COLS
 
                 for c, col in enumerate(error_df.columns):
-
                     header = get_shift_string(col) if col in shift_keys else col
                     header = header or col
                     sheet.write(0, c, header, fmt_header)
@@ -256,24 +248,18 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
                         col_name = error_df.columns[c]
 
                         if col_name in DAY_COLS:
-                           
                             try:
                                 sheet.write_number(r, c, float(val or 0), fmt_days)
                             except Exception:
                                 sheet.write(r, c, "" if val is None else str(val), fmt_center)
-
                         elif col_name in CURRENCY_COLS:
-                           
                             try:
                                 sheet.write_number(r, c, float(val or 0), fmt_inr)
                             except Exception:
                                 sheet.write(r, c, "" if val is None else str(val), fmt_center)
-
                         else:
-                        
                             sheet.write(r, c, "" if val is None else str(val), fmt_center)
 
-       
         if clean_df.empty:
             raise HTTPException(400, make_json_safe({
                 "message": "File processed with errors",
@@ -288,7 +274,6 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
 
         shift_rates = load_shift_rates(db)
         inserted = 0
-
         allowed_fields = {
             "emp_id", "emp_name", "grade", "department",
             "client", "project", "project_code",
@@ -296,35 +281,50 @@ async def process_excel_upload(file, db: Session, user, base_url: str):
             "duration_month", "payroll_month",
             "billability_status", "practice_remarks", "rmg_comments",
         }
-
         shift_keys = get_all_shift_keys()
-        for row in clean_df.to_dict("records"):
-            delete_existing_emp_month(
-                db, row.get("emp_id"), row.get("client"),
-                row.get("duration_month"), row.get("payroll_month")
-            )
 
+        # Delete all existing ShiftAllowances & ShiftMappings in one query
+        emp_ids = clean_df["emp_id"].unique().tolist()
+        existing_records = db.query(ShiftAllowances).filter(ShiftAllowances.emp_id.in_(emp_ids)).all()
+        if existing_records:
+            ids = [r.id for r in existing_records]
+            db.query(ShiftMapping).filter(ShiftMapping.shiftallowance_id.in_(ids)).delete(synchronize_session=False)
+            db.query(ShiftAllowances).filter(ShiftAllowances.id.in_(ids)).delete(synchronize_session=False)
+
+        # Prepare objects for bulk insert
+        sa_objects = []
+        sm_objects = []
+
+        for row in clean_df.to_dict("records"):
             sa = ShiftAllowances(**{k: row[k] for k in allowed_fields if k in row})
+            sa_objects.append(sa)
+            # Flush temporarily to get IDs for ShiftMapping
             db.add(sa)
             db.flush()
-
             for shift in shift_keys:
                 days = float(row.get(shift, 0) or 0)
                 if days > 0:
-                    db.add(ShiftMapping(
-                        shiftallowance_id=sa.id,
-                        shift_type=shift,
-                        days=days,
-                        total_allowance=days * shift_rates.get(shift, 0),
-                    ))
-
+                    sm_objects.append(
+                        ShiftMapping(
+                            shiftallowance_id=sa.id,
+                            shift_type=shift,
+                            days=days,
+                            total_allowance=days * shift_rates.get(shift, 0),
+                        )
+                    )
             inserted += 1
-            uploaded_file.record_count = inserted
-            payroll_month_value = clean_df["payroll_month"].dropna().iloc[0] \
-                if not clean_df["payroll_month"].dropna().empty else None
-            uploaded_file.payroll_month = payroll_month_value
-            uploaded_file.status = "processed"
-            db.commit()
+
+        #  Bulk insert ShiftMappings
+        if sm_objects:
+            db.bulk_save_objects(sm_objects)
+        db.commit()
+
+        # Update uploaded_file info
+        uploaded_file.record_count = inserted
+        uploaded_file.payroll_month = clean_df["payroll_month"].dropna().iloc[0] \
+            if not clean_df["payroll_month"].dropna().empty else None
+        uploaded_file.status = "processed"
+        db.commit()
 
         if error_rows:
             raise HTTPException(400, make_json_safe({
